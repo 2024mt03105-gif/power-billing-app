@@ -1,0 +1,55 @@
+name: monorepo-ci
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+
+jobs:
+  billing-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: power-billing-app/billing-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: power-billing-app/billing-backend/package-lock.json
+      - run: npm install
+      - run: npm run check
+      - run: npm run build
+
+  meter-simulator:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: power-billing-app/meter-simulator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: power-billing-app/meter-simulator/package-lock.json
+      - run: npm install
+      - run: npm run build
+
+  frontend-dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: power-billing-app/frontend-dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: power-billing-app/frontend-dashboard/package-lock.json
+      - run: npm install
+      - run: npm run build

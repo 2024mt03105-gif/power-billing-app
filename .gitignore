@@ -1,5 +1,6 @@
 node_modules/
 dist/
 .env
+*.tsbuildinfo
 power-billing-app/billing-backend/node_modules/
 power-billing-app/billing-backend/dist/

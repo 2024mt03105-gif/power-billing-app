@@ -1,0 +1,34 @@
+import PDFDocument from "pdfkit";
+export const buildBillPdf = (bill, meter) => {
+    const doc = new PDFDocument({ margin: 40 });
+    const stream = doc;
+    doc.fontSize(18).text("Power Billing Statement", { align: "center" });
+    doc.moveDown();
+    doc.fontSize(12).text(`Meter: ${meter.id}`);
+    doc.text(`Customer: ${meter.customerId}`);
+    doc.text(`Location: ${meter.location}`);
+    doc.text(`Billing month: ${bill.month}`);
+    doc.moveDown();
+    doc.fontSize(14).text("Usage Summary");
+    doc.fontSize(12);
+    doc.text(`Total kWh: ${bill.totalKwh}`);
+    doc.text(`Max demand (kWh, any reading): ${bill.maxDemandKwh}`);
+    doc.text(`Last reading: ${bill.lastReading ? bill.lastReading.kwh + " kWh at " + bill.lastReading.timestamp : "n/a"}`);
+    doc.text(`Current reading: ${bill.currentReading ? bill.currentReading.kwh + " kWh at " + bill.currentReading.timestamp : "n/a"}`);
+    doc.moveDown();
+    doc.fontSize(14).text(`Tariff plan: ${bill.planName}`);
+    doc.fontSize(12);
+    bill.slabs.forEach((slab, idx) => {
+        const range = slab.upto === null ? "above" : `up to ${slab.upto}`;
+        doc.text(`Slab ${idx + 1} (${range}) @ ${slab.rate}/kWh -> ${slab.units} kWh = ${slab.charge}`);
+    });
+    doc.moveDown();
+    doc.fontSize(14).text("Charges");
+    doc.fontSize(12);
+    doc.text(`Energy charge: ${bill.energyCharge}`);
+    doc.text(`Fixed charge: ${bill.fixedCharge}`);
+    doc.text(`Taxes: ${bill.taxes}`);
+    doc.text(`Total: ${bill.totalAmount}`);
+    doc.end();
+    return stream;
+};

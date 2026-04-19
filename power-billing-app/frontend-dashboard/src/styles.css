@@ -1,5 +1,5 @@
 :root {
-  font-family: "Segoe UI", sans-serif;
+  font-family: "Poppins", "Segoe UI", sans-serif;
   color: #f5f4ef;
   background:
     radial-gradient(circle at top left, rgba(255, 185, 90, 0.22), transparent 28%),
@@ -35,6 +35,12 @@ select {
 
 button {
   cursor: pointer;
+  transition: transform 0.18s ease, filter 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
 }
 
 .page-shell,
@@ -146,7 +152,10 @@ h1 {
 .meter-list,
 .alert-list,
 .reading-bars,
-.bill-stack {
+.bill-stack,
+.slab-list,
+.tariff-actions,
+.preset-buttons {
   display: grid;
   gap: 14px;
 }
@@ -227,6 +236,12 @@ h1 {
   border-radius: 18px;
   padding: 14px;
   color: #f5f4ef;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.meter-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 194, 107, 0.45);
 }
 
 .meter-row.selected {
@@ -246,6 +261,28 @@ h1 {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.profile-card {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(100, 181, 246, 0.08);
+  border: 1px solid rgba(100, 181, 246, 0.22);
+}
+
+.profile-title {
+  color: #8fc9ff;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.profile-card p,
+.profile-card small {
+  color: #bfd1dd;
+}
+
 .bill-total {
   font-size: 1.2rem;
   border-bottom: none;
@@ -257,6 +294,36 @@ h1 {
   grid-template-columns: 1.3fr 1fr auto;
   gap: 14px;
   align-items: center;
+}
+
+.meter-filter {
+  margin-bottom: 12px;
+}
+
+.bill-history {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.history-row small {
+  color: #bfd1dd;
 }
 
 .bar-wrap {
@@ -286,12 +353,45 @@ h1 {
   background: rgba(255, 98, 98, 0.14);
 }
 
+.tariff-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.tariff-field {
+  display: grid;
+  gap: 8px;
+}
+
+.slab-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.tariff-actions {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.preset-buttons {
+  grid-auto-flow: column;
+  justify-content: start;
+}
+
 @media (max-width: 960px) {
   .hero,
   .stats-grid,
   .content-grid,
   .credential-grid,
-  .reading-row {
+  .reading-row,
+  .tariff-grid,
+  .slab-row,
+  .tariff-actions,
+  .preset-buttons {
     grid-template-columns: 1fr;
     display: grid;
   }

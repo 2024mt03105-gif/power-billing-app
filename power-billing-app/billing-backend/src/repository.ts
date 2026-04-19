@@ -1,4 +1,4 @@
-import { DashboardOverview, FraudAlert, FraudInsight, Meter, Reading, User } from "./domain.js";
+import { CustomerProfile, DashboardOverview, FraudAlert, FraudInsight, Meter, Reading, TariffPlan, TariffSlab, User } from "./domain.js";
 import { sql } from "./db.js";
 import bcrypt from "bcryptjs";
 
@@ -39,12 +39,28 @@ const toUser = (row: Record<string, unknown>): User => ({
   createdAt: new Date(String(row.created_at)).toISOString()
 });
 
+const toPlan = (row: Record<string, unknown>): TariffPlan => ({
+  id: String(row.id),
+  name: String(row.name),
+  slabs: row.slabs as TariffSlab[],
+  fixedCharge: Number(row.fixed_charge),
+  taxRate: Number(row.tax_rate),
+  active: Boolean(row.active),
+  updatedAt: new Date(String(row.updated_at)).toISOString()
+});
+
+const toCustomerProfile = (row: Record<string, unknown>): CustomerProfile => ({
+  customerId: String(row.customer_id),
+  customerName: String(row.customer_name),
+  serviceNumber: String(row.service_number),
+  address: String(row.address)
+});
+
 export const repository = {
   async listMeters(customerId?: string | null): Promise<Meter[]> {
     const rows = customerId
       ? await sql`select * from meters where customer_id = ${customerId} order by installed_at desc`
       : await sql`select * from meters order by installed_at desc`;
-
     return rows.map((row) => toMeter(row));
   },
 
@@ -59,7 +75,6 @@ export const repository = {
       values (${meter.id}, ${meter.customerId}, ${meter.serialNumber}, ${meter.location}, ${meter.status}, ${meter.installedAt})
       returning *
     `;
-
     return toMeter(rows[0]);
   },
 
@@ -69,7 +84,6 @@ export const repository = {
       values (${reading.id}, ${reading.meterId}, ${reading.timestamp}, ${reading.kwh}, ${reading.voltage}, ${reading.current}, ${reading.source})
       returning *
     `;
-
     return toReading(rows[0]);
   },
 
@@ -79,8 +93,19 @@ export const repository = {
       where meter_id = ${meterId}
       order by timestamp desc
     `;
-
     return rows.map((row) => toReading(row));
+  },
+
+  async listBillingMonths(meterId: string, limit = 12): Promise<string[]> {
+    const rows = await sql`
+      select to_char(timestamp at time zone 'UTC', 'YYYY-MM') as month
+      from readings
+      where meter_id = ${meterId}
+      group by month
+      order by month desc
+      limit ${limit}
+    `;
+    return rows.map((row) => String(row.month));
   },
 
   async listHistoricalReadingsBefore(meterId: string, timestamp: string): Promise<Reading[]> {
@@ -90,7 +115,6 @@ export const repository = {
       order by timestamp desc
       limit 30
     `;
-
     return rows.map((row) => toReading(row));
   },
 
@@ -100,7 +124,6 @@ export const repository = {
       values (${alert.id}, ${alert.meterId}, ${alert.readingId}, ${alert.severity}, ${alert.reason}, ${alert.detectedAt})
       returning *
     `;
-
     return toAlert(rows[0]);
   },
 
@@ -108,7 +131,6 @@ export const repository = {
     const rows = meterId
       ? await sql`select * from fraud_alerts where meter_id = ${meterId} order by detected_at desc`
       : await sql`select * from fraud_alerts order by detected_at desc`;
-
     return rows.map((row) => toAlert(row));
   },
 
@@ -233,42 +255,71 @@ export const repository = {
     return rows[0] ? toUser(rows[0]) : null;
   },
 
+  async getCustomerProfile(customerId: string): Promise<CustomerProfile | null> {
+    const rows = await sql`select * from customer_profiles where customer_id = ${customerId} limit 1`;
+    return rows[0] ? toCustomerProfile(rows[0]) : null;
+  },
+
+  async getActiveTariff(): Promise<TariffPlan | null> {
+    const rows = await sql`select * from tariff_plans where active = true limit 1`;
+    return rows[0] ? toPlan(rows[0]) : null;
+  },
+
+  async upsertTariff(plan: TariffPlan): Promise<TariffPlan> {
+    await sql`update tariff_plans set active = false`;
+    const rows = await sql`
+      insert into tariff_plans (id, name, slabs, fixed_charge, tax_rate, active, updated_at)
+      values (${plan.id}, ${plan.name}, ${sql.json(JSON.parse(JSON.stringify(plan.slabs)))}, ${plan.fixedCharge}, ${plan.taxRate}, ${plan.active}, ${plan.updatedAt})
+      on conflict (id) do update set name = excluded.name, slabs = excluded.slabs, fixed_charge = excluded.fixed_charge, tax_rate = excluded.tax_rate, active = excluded.active, updated_at = excluded.updated_at
+      returning *
+    `;
+    return toPlan(rows[0]);
+  },
+
   async seed(): Promise<void> {
     const [existing] = await sql`select count(*)::int as total from meters`;
     if (Number(existing.total) === 0) {
       const now = new Date().toISOString();
-      await this.saveMeter({
-        id: "meter-001",
-        customerId: "cust-1001",
-        serialNumber: "SMRT-2026-001",
-        location: "Hyderabad Sector 4",
-        status: "active",
-        installedAt: now
-      });
+      const clusterMeters = [
+        { id: "meter-001", customerId: "cust-1001", serialNumber: "SMRT-2026-001", location: "Cluster-A / Feeder-1" },
+        { id: "meter-002", customerId: "cust-1001", serialNumber: "SMRT-2026-002", location: "Cluster-A / Feeder-2" },
+        { id: "meter-003", customerId: "cust-1001", serialNumber: "SMRT-2026-003", location: "Cluster-A / Feeder-3" },
+        { id: "meter-004", customerId: "cust-1002", serialNumber: "SMRT-2026-004", location: "Cluster-B / Feeder-1" },
+        { id: "meter-005", customerId: "cust-1002", serialNumber: "SMRT-2026-005", location: "Cluster-B / Feeder-2" },
+        { id: "meter-006", customerId: "cust-1002", serialNumber: "SMRT-2026-006", location: "Cluster-B / Feeder-3" }
+      ];
 
-      await this.addReading({ id: "rd-1", meterId: "meter-001", timestamp: "2026-03-01T00:00:00.000Z", kwh: 12, voltage: 228, current: 5.1, source: "iot" });
-      await this.addReading({ id: "rd-2", meterId: "meter-001", timestamp: "2026-03-02T00:00:00.000Z", kwh: 14, voltage: 229, current: 5.5, source: "iot" });
-      await this.addReading({ id: "rd-3", meterId: "meter-001", timestamp: "2026-03-03T00:00:00.000Z", kwh: 34, voltage: 205, current: 8.9, source: "iot" });
+      for (const meter of clusterMeters) {
+        await this.saveMeter({
+          id: meter.id,
+          customerId: meter.customerId,
+          serialNumber: meter.serialNumber,
+          location: meter.location,
+          status: "active",
+          installedAt: now
+        });
+
+        await this.addReading({ id: `rd-${meter.id}-1`, meterId: meter.id, timestamp: "2026-03-01T00:00:00.000Z", kwh: 10 + Number(meter.id.slice(-1)), voltage: 228, current: 5.1, source: "iot" });
+        await this.addReading({ id: `rd-${meter.id}-2`, meterId: meter.id, timestamp: "2026-03-02T00:00:00.000Z", kwh: 11 + Number(meter.id.slice(-1)), voltage: 229, current: 5.4, source: "iot" });
+        await this.addReading({ id: `rd-${meter.id}-3`, meterId: meter.id, timestamp: "2026-03-03T00:00:00.000Z", kwh: 12 + Number(meter.id.slice(-1)), voltage: 227, current: 5.2, source: "iot" });
+      }
+
       await this.addFraudAlert({
         id: "alert-1",
-        meterId: "meter-001",
-        readingId: "rd-3",
+        meterId: "meter-006",
+        readingId: "rd-meter-006-3",
         severity: "high",
-        reason: "Seeded high-risk demo alert",
+        reason: "Seeded high-risk demo alert on Cluster-B",
         detectedAt: "2026-03-03T00:05:00.000Z"
       });
     }
 
-    const [userCount] = await sql`select count(*)::int as total from users`;
-    if (Number(userCount.total) > 0) {
-      return;
-    }
-
+    await sql`delete from users where username in ('operator', 'customer')`;
     const createdAt = new Date().toISOString();
     const users = [
       { id: "user-admin", username: "admin", password: "admin123", role: "admin", customerId: null },
-      { id: "user-ops", username: "operator", password: "operator123", role: "operator", customerId: null },
-      { id: "user-customer", username: "customer", password: "customer123", role: "customer", customerId: "cust-1001" }
+      { id: "user-customer-a", username: "customer_a", password: "customerA123", role: "customer", customerId: "cust-1001" },
+      { id: "user-customer-b", username: "customer_b", password: "customerB123", role: "customer", customerId: "cust-1002" }
     ] as const;
 
     for (const user of users) {
@@ -276,7 +327,54 @@ export const repository = {
       await sql`
         insert into users (id, username, password_hash, role, customer_id, created_at)
         values (${user.id}, ${user.username}, ${passwordHash}, ${user.role}, ${user.customerId}, ${createdAt})
+        on conflict (username) do update set
+          password_hash = excluded.password_hash,
+          role = excluded.role,
+          customer_id = excluded.customer_id
       `;
+    }
+
+    const profiles = [
+      {
+        customerId: "cust-1001",
+        customerName: "Ravi Kumar",
+        serviceNumber: "USC-510701",
+        address: "HNO 7-4-261/1, Ferozguda, Hyderabad"
+      },
+      {
+        customerId: "cust-1002",
+        customerName: "Lakshmi Devi",
+        serviceNumber: "USC-510702",
+        address: "HNO 3-10-45, Bowenpally, Hyderabad"
+      }
+    ] as const;
+
+    for (const profile of profiles) {
+      await sql`
+        insert into customer_profiles (customer_id, customer_name, service_number, address)
+        values (${profile.customerId}, ${profile.customerName}, ${profile.serviceNumber}, ${profile.address})
+        on conflict (customer_id) do update set
+          customer_name = excluded.customer_name,
+          service_number = excluded.service_number,
+          address = excluded.address
+      `;
+    }
+
+    const [planCount] = await sql`select count(*)::int as total from tariff_plans`;
+    if (Number(planCount.total) === 0) {
+      await this.upsertTariff({
+        id: "tariff-default",
+        name: "Default Slab",
+        slabs: [
+          { upto: 100, rate: 6 },
+          { upto: 200, rate: 8 },
+          { upto: null, rate: 10 }
+        ],
+        fixedCharge: 120,
+        taxRate: 0.05,
+        active: true,
+        updatedAt: new Date().toISOString()
+      });
     }
   }
 };

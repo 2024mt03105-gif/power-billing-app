@@ -15,7 +15,7 @@ import {
   YAxis
 } from "recharts";
 
-type UserRole = "admin" | "operator" | "customer";
+type UserRole = "admin" | "customer";
 
 type AuthUser = {
   sub: string;
@@ -59,6 +59,21 @@ type Bill = {
   totalAmount: number;
 };
 
+type BillHistoryItem = {
+  month: string;
+  totalKwh: number;
+  totalAmount: number;
+  dueDate: string;
+  pdfUrl: string;
+};
+
+type CustomerProfile = {
+  customerId: string;
+  customerName: string;
+  serviceNumber: string;
+  address: string;
+};
+
 type Overview = {
   month: string;
   totalMeters: number;
@@ -72,6 +87,17 @@ type FraudInsight = {
   month: string;
   severityBreakdown: Array<{ severity: "medium" | "high"; total: number }>;
   riskyMeters: Array<{ meterId: string; location: string; alertCount: number }>;
+};
+
+type TariffSlab = { upto: number | null; rate: number };
+type TariffPlan = {
+  id?: string;
+  name: string;
+  slabs: TariffSlab[];
+  fixedCharge: number;
+  taxRate: number;
+  active: boolean;
+  updatedAt?: string;
 };
 
 type ConsumptionPoint = {
@@ -94,15 +120,47 @@ const userStorageKey = "power-billing-user";
 
 const credentials = [
   { username: "admin", password: "admin123", role: "admin" },
-  { username: "operator", password: "operator123", role: "operator" },
-  { username: "customer", password: "customer123", role: "customer" }
+  { username: "customer_a", password: "customerA123", role: "customer" },
+  { username: "customer_b", password: "customerB123", role: "customer" }
+];
+
+const tariffPresets: Array<{ label: string; plan: TariffPlan }> = [
+  {
+    label: "Domestic Cat I(A) 0-100",
+    plan: {
+      name: "Domestic Cat-I(A)",
+      slabs: [
+        { upto: 50, rate: 1.95 },
+        { upto: 100, rate: 3.1 }
+      ],
+      fixedCharge: 10,
+      taxRate: 0.05,
+      active: true
+    }
+  },
+  {
+    label: "Domestic Cat I(B)(ii) >200",
+    plan: {
+      name: "Domestic Cat-I(B)(ii)",
+      slabs: [
+        { upto: 200, rate: 5.1 },
+        { upto: 300, rate: 7.7 },
+        { upto: 400, rate: 9.0 },
+        { upto: 800, rate: 9.5 },
+        { upto: null, rate: 10.0 }
+      ],
+      fixedCharge: 50,
+      taxRate: 0.05,
+      active: true
+    }
+  }
 ];
 
 const App = () => {
   const [token, setToken] = useState<string>(() => localStorage.getItem(tokenStorageKey) ?? "");
   const [user, setUser] = useState<AuthUser | null>(() => {
     const value = localStorage.getItem(userStorageKey);
-    return value ? JSON.parse(value) as AuthUser : null;
+    return value ? (JSON.parse(value) as AuthUser) : null;
   });
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("admin123");
@@ -117,18 +175,19 @@ const App = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>("");
+  const [tariff, setTariff] = useState<TariffPlan | null>(null);
+  const [tariffSaving, setTariffSaving] = useState(false);
+  const [billHistory, setBillHistory] = useState<BillHistoryItem[]>([]);
+  const [meterFilter, setMeterFilter] = useState("");
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfile | null>(null);
 
   const apiFetch = async <T,>(path: string): Promise<T> => {
     const response = await fetch(`${apiBaseUrl}${path}`, {
-      headers: token
-        ? {
-            Authorization: `Bearer ${token}`
-          }
-        : undefined
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined
     });
 
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({ message: "Request failed" })) as { message?: string };
+      const payload = (await response.json().catch(() => ({ message: "Request failed" }))) as { message?: string };
       throw new Error(payload.message ?? `Request failed with ${response.status}`);
     }
 
@@ -136,10 +195,7 @@ const App = () => {
   };
 
   const loadSharedData = async () => {
-    if (!token) {
-      return;
-    }
-
+    if (!token) return;
     setLoading(true);
     setError("");
 
@@ -155,9 +211,20 @@ const App = () => {
       setOverview(overviewPayload);
       setAlerts(alertsPayload.items);
       setInsights(insightPayload);
+
+      if (user?.role === "admin") {
+        try {
+          const tariffPayload = await apiFetch<{ plan: TariffPlan | null }>("/admin/tariff");
+          setTariff(tariffPayload.plan);
+        } catch {
+          setTariff(null);
+        }
+      }
+
       if (meterPayload.items.length > 0 && !meterPayload.items.some((meter) => meter.id === selectedMeterId)) {
         setSelectedMeterId(meterPayload.items[0].id);
       }
+
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load dashboard");
@@ -167,46 +234,66 @@ const App = () => {
   };
 
   const loadMeterData = async () => {
-    if (!token || !selectedMeterId) {
-      return;
-    }
+    if (!token || !selectedMeterId) return;
 
     try {
-      const [readingsPayload, billPayload, trendPayload] = await Promise.all([
+      const [readingsPayload, billPayload, trendPayload, historyPayload, profilePayload] = await Promise.all([
         apiFetch<{ items: Reading[] }>(`/api/meters/${selectedMeterId}/readings`),
         apiFetch<Bill>(`/api/meters/${selectedMeterId}/bills/${month}`),
-        apiFetch<{ items: ConsumptionPoint[] }>(`/api/meters/${selectedMeterId}/consumption/${month}`)
+        apiFetch<{ items: ConsumptionPoint[] }>(`/api/meters/${selectedMeterId}/consumption/${month}`),
+        apiFetch<{ items: BillHistoryItem[] }>(`/api/meters/${selectedMeterId}/bills/history?limit=12`),
+        apiFetch<{ profile: CustomerProfile }>(`/api/meters/${selectedMeterId}/customer-profile`)
       ]);
 
       setReadings(readingsPayload.items.slice(0, 12).reverse());
       setBill(billPayload);
       setTrend(trendPayload.items);
+      setBillHistory(historyPayload.items);
+      setCustomerProfile(profilePayload.profile);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load meter data");
     }
   };
 
-  useEffect(() => {
-    if (!token) {
-      return;
-    }
+  const downloadBillPdf = async (forMonth = month): Promise<void> => {
+    if (!token || !selectedMeterId) return;
 
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/meters/${selectedMeterId}/bills/${forMonth}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to download PDF (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `Bill-${selectedMeterId}-${forMonth}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Failed to download bill PDF");
+    }
+  };
+
+  useEffect(() => {
+    if (!token) return;
     void loadSharedData();
   }, [token]);
 
   useEffect(() => {
-    if (!token || !selectedMeterId) {
-      return;
-    }
-
+    if (!token || !selectedMeterId) return;
     void loadMeterData();
   }, [token, selectedMeterId]);
 
   useEffect(() => {
-    if (!token) {
-      return;
-    }
+    if (!token) return;
 
     const stream = new EventSource(`${apiBaseUrl}/api/stream?token=${encodeURIComponent(token)}`);
     const refresh = () => {
@@ -217,25 +304,17 @@ const App = () => {
     stream.addEventListener("reading.created", refresh);
     stream.addEventListener("fraud.alert", refresh);
     stream.addEventListener("meter.created", refresh);
-    stream.onerror = () => {
-      setError("Live stream disconnected. Falling back to scheduled refresh.");
-    };
+    stream.onerror = () => setError("Live stream disconnected. Falling back to scheduled refresh.");
 
-    return () => {
-      stream.close();
-    };
+    return () => stream.close();
   }, [token, selectedMeterId]);
 
   useEffect(() => {
-    if (!token) {
-      return;
-    }
-
+    if (!token) return;
     const timer = window.setInterval(() => {
       void loadSharedData();
       void loadMeterData();
     }, refreshIntervalMs);
-
     return () => window.clearInterval(timer);
   }, [token, selectedMeterId]);
 
@@ -246,18 +325,16 @@ const App = () => {
     try {
       const response = await fetch(`${apiBaseUrl}/auth/login`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ username, password })
       });
 
       if (!response.ok) {
-        const payload = await response.json() as { message?: string };
+        const payload = (await response.json()) as { message?: string };
         throw new Error(payload.message ?? "Login failed");
       }
 
-      const payload = await response.json() as LoginResponse;
+      const payload = (await response.json()) as LoginResponse;
       localStorage.setItem(tokenStorageKey, payload.token);
       localStorage.setItem(userStorageKey, JSON.stringify(payload.user));
       setToken(payload.token);
@@ -272,23 +349,60 @@ const App = () => {
     localStorage.removeItem(userStorageKey);
     setToken("");
     setUser(null);
+    setTariff(null);
     setMeters([]);
     setAlerts([]);
     setReadings([]);
-    setTrend([]);
-    setBill(null);
-    setOverview(null);
-    setInsights(null);
+      setTrend([]);
+      setBillHistory([]);
+      setCustomerProfile(null);
+      setBill(null);
+      setOverview(null);
+      setInsights(null);
   };
 
   const riskHeadline = useMemo(() => {
     if (!insights || insights.riskyMeters.length === 0) {
       return "No high-risk meter clusters in the current month.";
     }
-
     const top = insights.riskyMeters[0];
     return `${top.meterId} at ${top.location} has the highest alert volume with ${top.alertCount} alerts.`;
   }, [insights]);
+
+  const visibleMeters = useMemo(() => {
+    const keyword = meterFilter.trim().toLowerCase();
+    if (!keyword) return meters;
+    return meters.filter((meter) =>
+      [meter.id, meter.serialNumber, meter.location, meter.customerId].some((text) => text.toLowerCase().includes(keyword))
+    );
+  }, [meters, meterFilter]);
+
+  const exportBillHistoryCsv = (): void => {
+    if (!selectedMeterId || billHistory.length === 0) return;
+
+    const header = ["Month", "Meter ID", "Customer ID", "Service Number", "Units (kWh)", "Total Amount", "Due Date"];
+    const rows = billHistory.map((item) => [
+      item.month,
+      selectedMeterId,
+      customerProfile?.customerId ?? "",
+      customerProfile?.serviceNumber ?? "",
+      String(item.totalKwh),
+      String(item.totalAmount),
+      item.dueDate
+    ]);
+
+    const toCsvCell = (value: string) => `"${value.replace(/"/g, "\"\"")}"`;
+    const csv = [header, ...rows].map((row) => row.map((cell) => toCsvCell(cell)).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Bill-History-${selectedMeterId}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
 
   if (!token || !user) {
     return (
@@ -365,8 +479,14 @@ const App = () => {
               ))}
             </select>
           </div>
+          <input
+            className="meter-filter"
+            placeholder="Search meter by id, serial, location, customer..."
+            value={meterFilter}
+            onChange={(event) => setMeterFilter(event.target.value)}
+          />
           <div className="meter-list">
-            {meters.map((meter) => (
+            {visibleMeters.map((meter) => (
               <button key={meter.id} className={`meter-row ${selectedMeterId === meter.id ? "selected" : ""}`} onClick={() => setSelectedMeterId(meter.id)}>
                 <strong>{meter.id}</strong>
                 <span>{meter.location}</span>
@@ -382,6 +502,13 @@ const App = () => {
             <h2>Monthly bill</h2>
             <span className="pill">{month}</span>
           </div>
+          <div className="profile-card">
+            <p className="profile-title">Customer Profile</p>
+            <strong>{customerProfile?.customerName ?? "N/A"}</strong>
+            <p>Service No: {customerProfile?.serviceNumber ?? "N/A"}</p>
+            <p>Customer ID: {customerProfile?.customerId ?? "N/A"}</p>
+            <small>{customerProfile?.address ?? "Address not available"}</small>
+          </div>
           {bill ? (
             <div className="bill-stack">
               <div><span>Total usage</span><strong>{bill.totalKwh} kWh</strong></div>
@@ -391,6 +518,38 @@ const App = () => {
               <div className="bill-total"><span>Total</span><strong>{bill.totalAmount}</strong></div>
             </div>
           ) : <p className="empty-copy">Bill data will appear once readings are available.</p>}
+          <div style={{ marginTop: "12px" }}>
+            <button className="secondary-button" onClick={() => void downloadBillPdf()}>Download PDF Bill</button>
+          </div>
+          <div className="bill-history">
+            <div className="panel-header">
+              <h2>Bill history</h2>
+              <span className="pill">Last 12 months</span>
+            </div>
+            <div style={{ marginBottom: "12px" }}>
+              <button className="secondary-button" onClick={exportBillHistoryCsv} disabled={billHistory.length === 0}>
+                Export CSV
+              </button>
+            </div>
+            {billHistory.length === 0 ? (
+              <p className="empty-copy">No historical bills yet for this meter.</p>
+            ) : (
+              <div className="history-list">
+                {billHistory.map((item) => (
+                  <div key={item.month} className="history-row">
+                    <div>
+                      <strong>{item.month}</strong>
+                      <p>{item.totalKwh} kWh | Total {item.totalAmount}</p>
+                      <small>Due {item.dueDate}</small>
+                    </div>
+                    <button className="secondary-button" onClick={() => void downloadBillPdf(item.month)}>
+                      PDF
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </article>
 
         <article className="panel analytics-panel">
@@ -414,6 +573,149 @@ const App = () => {
           </div>
         </article>
       </section>
+
+      {user.role === "admin" && (
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Tariff editor (admin)</h2>
+            <span className="pill">Active plan</span>
+          </div>
+          <div className="tariff-grid">
+            <label className="tariff-field">
+              Name
+              <input
+                value={tariff?.name ?? ""}
+                onChange={(e) => setTariff((t) => ({ ...(t ?? { name: "", slabs: [], fixedCharge: 0, taxRate: 0, active: true }), name: e.target.value }))}
+              />
+            </label>
+            <label className="tariff-field">
+              Fixed charge
+              <input
+                type="number"
+                value={tariff?.fixedCharge ?? 0}
+                onChange={(e) => setTariff((t) => ({ ...(t ?? { name: "", slabs: [], fixedCharge: 0, taxRate: 0, active: true }), fixedCharge: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="tariff-field">
+              Tax rate (e.g. 0.05)
+              <input
+                type="number"
+                step="0.01"
+                value={tariff?.taxRate ?? 0}
+                onChange={(e) => setTariff((t) => ({ ...(t ?? { name: "", slabs: [], fixedCharge: 0, taxRate: 0, active: true }), taxRate: Number(e.target.value) }))}
+              />
+            </label>
+          </div>
+          <div className="slab-list">
+            {(tariff?.slabs ?? []).map((slab, idx) => (
+              <div key={idx} className="slab-row">
+                <label>
+                  Upto (null = no cap)
+                  <input
+                    type="number"
+                    value={slab.upto ?? ""}
+                    placeholder="null"
+                    onChange={(e) => {
+                      const value = e.target.value === "" ? null : Number(e.target.value);
+                      setTariff((t) => {
+                        if (!t) return null;
+                        const slabs = [...t.slabs];
+                        slabs[idx] = { ...slabs[idx], upto: value };
+                        return { ...t, slabs };
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  Rate (per kWh)
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={slab.rate}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      setTariff((t) => {
+                        if (!t) return null;
+                        const slabs = [...t.slabs];
+                        slabs[idx] = { ...slabs[idx], rate: value };
+                        return { ...t, slabs };
+                      });
+                    }}
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  onClick={() =>
+                    setTariff((t) => {
+                      if (!t) return null;
+                      const slabs = t.slabs.filter((_, sIdx) => sIdx !== idx);
+                      return { ...t, slabs };
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              className="secondary-button"
+              onClick={() =>
+                setTariff((t) => {
+                  const base = t ?? { name: "", slabs: [], fixedCharge: 0, taxRate: 0, active: true };
+                  return { ...base, slabs: [...base.slabs, { upto: null, rate: 0 }] };
+                })
+              }
+            >
+              Add slab
+            </button>
+          </div>
+          <div className="tariff-actions">
+            <div className="preset-buttons">
+              {tariffPresets.map((preset) => (
+                <button key={preset.label} className="secondary-button" onClick={() => setTariff({ ...preset.plan })}>
+                  Use preset: {preset.label}
+                </button>
+              ))}
+            </div>
+            <button
+              className="secondary-button"
+              disabled={tariffSaving || !tariff}
+              onClick={async () => {
+                if (!tariff) return;
+                setTariffSaving(true);
+                setError("");
+                try {
+                  const response = await fetch(`${apiBaseUrl}/admin/tariff`, {
+                    method: "POST",
+                    headers: {
+                      "content-type": "application/json",
+                      Authorization: `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                      name: tariff.name,
+                      fixedCharge: tariff.fixedCharge,
+                      taxRate: tariff.taxRate,
+                      slabs: tariff.slabs
+                    })
+                  });
+                  if (!response.ok) {
+                    const payload = await response.json().catch(() => ({}));
+                    throw new Error((payload as { message?: string }).message ?? "Failed to save tariff");
+                  }
+                  const payload = (await response.json()) as { plan: TariffPlan };
+                  setTariff(payload.plan);
+                } catch (saveError) {
+                  setError(saveError instanceof Error ? saveError.message : "Failed to save tariff");
+                } finally {
+                  setTariffSaving(false);
+                }
+              }}
+            >
+              {tariffSaving ? "Saving..." : "Save tariff"}
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="content-grid tall-grid">
         <article className="panel">
@@ -478,7 +780,7 @@ const App = () => {
         <article className="panel">
           <div className="panel-header">
             <h2>Fraud alerts</h2>
-            <span className="pill">{user.role === "customer" ? "Your meters" : "Operations view"}</span>
+            <span className="pill">{user.role === "customer" ? "Your meters" : "All meters"}</span>
           </div>
           <div className="alert-list">
             {alerts.length === 0 ? <p className="empty-copy">No alerts yet.</p> : alerts.slice(0, 10).map((alert) => (

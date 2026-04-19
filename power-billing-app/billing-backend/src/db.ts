@@ -62,6 +62,29 @@ export const initializeDatabase = async (): Promise<void> => {
       created_at timestamptz not null
     )
   `;
+
+  await sql`
+    create table if not exists customer_profiles (
+      customer_id text primary key,
+      customer_name text not null,
+      service_number text not null unique,
+      address text not null
+    )
+  `;
+
+  await sql`
+    create table if not exists tariff_plans (
+      id text primary key,
+      name text not null,
+      slabs jsonb not null,
+      fixed_charge double precision not null,
+      tax_rate double precision not null,
+      active boolean not null default false,
+      updated_at timestamptz not null
+    )
+  `;
+
+  await sql`create index if not exists idx_tariff_active on tariff_plans (active)`;
 };
 
 export const closeDatabase = async (): Promise<void> => {

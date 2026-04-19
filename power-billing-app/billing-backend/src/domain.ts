@@ -1,6 +1,6 @@
 export type MeterStatus = "active" | "investigation" | "disconnected";
 export type ReadingSource = "iot" | "manual";
-export type UserRole = "admin" | "operator" | "customer";
+export type UserRole = "admin" | "customer";
 
 export interface Meter {
   id: string;
@@ -63,6 +63,30 @@ export interface FraudInsight {
   riskyMeters: Array<{ meterId: string; location: string; alertCount: number }>;
 }
 
+export interface TariffSlab {
+  upto: number | null; // null means no upper cap
+  rate: number;
+}
+
+export interface TariffPlan {
+  id: string;
+  name: string;
+  slabs: TariffSlab[];
+  fixedCharge: number;
+  taxRate: number;
+  active: boolean;
+  updatedAt: string;
+}
+
+export interface BillDetail extends BillingPeriod {
+  slabs: Array<{ upto: number | null; rate: number; units: number; charge: number }>;
+  previousReading: Reading | null;
+  currentReading: Reading | null;
+  maxDemandKwh: number;
+  planName: string;
+  dueDate: string;
+}
+
 export interface User {
   id: string;
   username: string;
@@ -70,6 +94,13 @@ export interface User {
   role: UserRole;
   customerId: string | null;
   createdAt: string;
+}
+
+export interface CustomerProfile {
+  customerId: string;
+  customerName: string;
+  serviceNumber: string;
+  address: string;
 }
 
 export interface AuthUser {

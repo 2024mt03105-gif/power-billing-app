@@ -1,6 +1,18 @@
-export type MeterStatus = "active" | "investigation" | "disconnected";
+export type MeterStatus = "active" | "investigation" | "disconnected" | "NON_USAGE";
 export type ReadingSource = "iot" | "manual";
 export type UserRole = "admin" | "customer";
+export type PowerSessionStatus = "ACCEPTED" | "DUPLICATE";
+export type SeasonName = "Summer" | "Winter" | "Monsoon";
+export type RegionalValidationStatus = "VALID" | "REGION_REPLAY";
+export type ReadingStatus = "VALID" | "INVALID";
+export type FraudEventType =
+  | "METER_TAMPERING"
+  | "BYPASS_CONNECTION"
+  | "DUPLICATE_SESSION_ID"
+  | "SEASONAL_REPLAY"
+  | "REGIONAL_MISMATCH"
+  | "NON_USAGE"
+  | "SUDDEN_CONSUMPTION_SPIKE";
 
 export interface Meter {
   id: string;
@@ -19,6 +31,7 @@ export interface Reading {
   voltage: number;
   current: number;
   source: ReadingSource;
+  status?: ReadingStatus;
 }
 
 export interface FraudAlert {
@@ -46,6 +59,8 @@ export interface BillingConfig {
   fixedCharge: number;
   taxRate: number;
   fraudSpikeFactor: number;
+  seasonalReplayThreshold: number;
+  seasonalMinExpectedKwh: number;
 }
 
 export interface DashboardOverview {
@@ -108,4 +123,141 @@ export interface AuthUser {
   username: string;
   role: UserRole;
   customerId: string | null;
+}
+
+export interface PowerSession {
+  sessionId: string;
+  meterId: string;
+  startTime: string;
+  endTime: string;
+  regionId: string;
+  status: PowerSessionStatus;
+  createdAt: string;
+}
+
+export interface SessionFraudEvent {
+  id: string;
+  sessionId: string;
+  meterId: string;
+  regionId: string;
+  reason: string;
+  detectedAt: string;
+}
+
+export interface SeasonalProfile {
+  regionId: string;
+  season: SeasonName;
+  avgConsumptionKwh: number;
+  updatedAt: string;
+}
+
+export interface FraudLogEvent {
+  id: string;
+  meterId: string;
+  readingId: string;
+  regionId: string;
+  season: SeasonName;
+  observedKwh: number;
+  expectedKwh: number;
+  thresholdPercent: number;
+  fraudType: "seasonal_replay";
+  message: string;
+  detectedAt: string;
+}
+
+export interface MeterRegionRegistration {
+  meterId: string;
+  regionId: string;
+  latitude: number;
+  longitude: number;
+  updatedAt: string;
+}
+
+export interface RegionReplayFraudRecord {
+  id: string;
+  meterId: string;
+  incomingRegionId: string;
+  registeredRegionId: string;
+  incomingLatitude: number;
+  incomingLongitude: number;
+  eventType: "REGION_REPLAY";
+  message: string;
+  detectedAt: string;
+}
+
+export interface PowerSample {
+  meterId: string;
+  timestamp: string;
+  powerKw: number;
+}
+
+export interface SpikeThreshold {
+  meterId: string;
+  thresholdKw: number;
+  updatedAt: string;
+}
+
+export interface SpikeEvent {
+  id: string;
+  meterId: string;
+  powerKw: number;
+  thresholdKw: number;
+  excessKw: number;
+  sampleTime: string;
+  detectedAt: string;
+  eventType: "POWER_SPIKE";
+}
+
+export interface NonUsageWindowStats {
+  meterId: string;
+  firstTs: string | null;
+  lastTs: string | null;
+  sampleCount: number;
+  positiveCount: number;
+  voltagePresentCount: number;
+  hoursSinceFirstZero: number;
+}
+
+export interface NonUsageAlert {
+  id: string;
+  meterId: string;
+  severity: "medium" | "high";
+  reason: string;
+  detectedAt: string;
+}
+
+export interface ReadingValidationError {
+  id: string;
+  meterId: string;
+  readingId: string;
+  previousReadingId: string | null;
+  previousKwh: number | null;
+  currentKwh: number;
+  thresholdKwh: number;
+  errorCodes: string[];
+  message: string;
+  detectedAt: string;
+}
+
+export interface FraudEvent {
+  id: string;
+  meterId: string;
+  eventType: FraudEventType;
+  severity: "medium" | "high";
+  source: string;
+  payload: Record<string, unknown>;
+  detectedAt: string;
+}
+
+export interface ConsumptionSession {
+  sessionId: string;
+  meterId: string;
+  startTime: string;
+  endTime: string | null;
+  totalEnergy: number;
+  peakPower: number;
+  regionId: string;
+  status: "OPEN" | "CLOSED";
+  createdAt: string;
+  updatedAt: string;
 }

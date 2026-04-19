@@ -37,6 +37,8 @@ Node.js + TypeScript API with SQL-backed persistence for:
 - `POST /api/validation/meters/:meterId/readings` (invalid reading detection and error logging)
 - `POST /api/fraud-engine/process` (run all fraud rules on incoming meter payload)
 - `GET /api/fraud-engine/events` (unified fraud event feed for dashboard)
+- `GET /api/fraud-engine/events/:eventId` (full event detail with meter + incident snapshot)
+- `POST /admin/fraud-engine/initiate-cases` (initiate one fraud event for each detection case)
 - `POST /api/consumption-sessions/start` and `POST /api/consumption-sessions/:sessionId/stop`
 - `GET /api/consumption-sessions/:sessionId`
 - `GET /api/meters/:meterId/consumption-sessions`

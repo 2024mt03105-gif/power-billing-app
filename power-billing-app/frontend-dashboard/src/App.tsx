@@ -50,6 +50,33 @@ type FraudAlert = {
   detectedAt: string;
 };
 
+type FraudEvent = {
+  id: string;
+  meterId: string;
+  eventType: string;
+  severity: "medium" | "high";
+  source: string;
+  payload: Record<string, unknown>;
+  detectedAt: string;
+};
+
+type FraudEventDetail = {
+  event: FraudEvent;
+  meter: {
+    id: string;
+    serialNumber: string;
+    location: string;
+    status: string;
+  };
+  incident: {
+    timestamp: string;
+    kwh: number | null;
+    voltage: number | null;
+    current: number | null;
+    estimatedLossKwh: number;
+  };
+};
+
 type Bill = {
   month: string;
   totalKwh: number;
@@ -168,6 +195,9 @@ const App = () => {
   const [selectedMeterId, setSelectedMeterId] = useState<string>("meter-001");
   const [readings, setReadings] = useState<Reading[]>([]);
   const [alerts, setAlerts] = useState<FraudAlert[]>([]);
+  const [fraudEvents, setFraudEvents] = useState<FraudEvent[]>([]);
+  const [selectedFraudEventId, setSelectedFraudEventId] = useState<string>("");
+  const [selectedFraudEventDetail, setSelectedFraudEventDetail] = useState<FraudEventDetail | null>(null);
   const [bill, setBill] = useState<Bill | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [insights, setInsights] = useState<FraudInsight | null>(null);
@@ -200,17 +230,23 @@ const App = () => {
     setError("");
 
     try {
-      const [meterPayload, overviewPayload, alertsPayload, insightPayload] = await Promise.all([
+      const [meterPayload, overviewPayload, alertsPayload, insightPayload, fraudEventPayload] = await Promise.all([
         apiFetch<{ items: Meter[] }>("/api/meters"),
         apiFetch<Overview>(`/api/dashboard/overview/${month}`),
         apiFetch<{ items: FraudAlert[] }>("/api/fraud-alerts"),
-        apiFetch<FraudInsight>(`/api/dashboard/fraud/${month}`)
+        apiFetch<FraudInsight>(`/api/dashboard/fraud/${month}`),
+        apiFetch<{ items: FraudEvent[] }>("/api/fraud-engine/events?limit=50")
       ]);
 
       setMeters(meterPayload.items);
       setOverview(overviewPayload);
       setAlerts(alertsPayload.items);
       setInsights(insightPayload);
+      setFraudEvents(fraudEventPayload.items);
+
+      if (fraudEventPayload.items.length > 0 && !fraudEventPayload.items.some((event) => event.id === selectedFraudEventId)) {
+        setSelectedFraudEventId(fraudEventPayload.items[0].id);
+      }
 
       if (user?.role === "admin") {
         try {
@@ -230,6 +266,16 @@ const App = () => {
       setError(loadError instanceof Error ? loadError.message : "Unable to load dashboard");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadFraudEventDetail = async (eventId: string) => {
+    if (!token || !eventId) return;
+    try {
+      const detail = await apiFetch<FraudEventDetail>(`/api/fraud-engine/events/${eventId}`);
+      setSelectedFraudEventDetail(detail);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load fraud event details");
     }
   };
 
@@ -293,6 +339,11 @@ const App = () => {
   }, [token, selectedMeterId]);
 
   useEffect(() => {
+    if (!token || !selectedFraudEventId) return;
+    void loadFraudEventDetail(selectedFraudEventId);
+  }, [token, selectedFraudEventId]);
+
+  useEffect(() => {
     if (!token) return;
 
     const stream = new EventSource(`${apiBaseUrl}/api/stream?token=${encodeURIComponent(token)}`);
@@ -303,6 +354,8 @@ const App = () => {
 
     stream.addEventListener("reading.created", refresh);
     stream.addEventListener("fraud.alert", refresh);
+    stream.addEventListener("fraud.engine.events", refresh);
+    stream.addEventListener("admin.notification", refresh);
     stream.addEventListener("meter.created", refresh);
     stream.onerror = () => setError("Live stream disconnected. Falling back to scheduled refresh.");
 
@@ -352,6 +405,9 @@ const App = () => {
     setTariff(null);
     setMeters([]);
     setAlerts([]);
+    setFraudEvents([]);
+    setSelectedFraudEventId("");
+    setSelectedFraudEventDetail(null);
     setReadings([]);
       setTrend([]);
       setBillHistory([]);
@@ -779,17 +835,45 @@ const App = () => {
 
         <article className="panel">
           <div className="panel-header">
-            <h2>Fraud alerts</h2>
-            <span className="pill">{user.role === "customer" ? "Your meters" : "All meters"}</span>
+            <h2>Fraud events</h2>
+            <span className="pill">{user.role === "customer" ? "Your meters" : "All meters"} | Engine</span>
           </div>
-          <div className="alert-list">
-            {alerts.length === 0 ? <p className="empty-copy">No alerts yet.</p> : alerts.slice(0, 10).map((alert) => (
-              <div key={alert.id} className={`alert-row ${alert.severity}`}>
-                <strong>{alert.severity.toUpperCase()} | {alert.meterId}</strong>
-                <p>{alert.reason}</p>
-                <small>{new Date(alert.detectedAt).toLocaleString()}</small>
-              </div>
-            ))}
+          <div className="event-layout">
+            <div className="alert-list">
+              {fraudEvents.length === 0 ? (
+                <p className="empty-copy">No fraud events yet.</p>
+              ) : (
+                fraudEvents.slice(0, 20).map((event) => (
+                  <button
+                    key={event.id}
+                    className={`alert-row ${event.severity} ${selectedFraudEventId === event.id ? "selected" : ""}`}
+                    onClick={() => setSelectedFraudEventId(event.id)}
+                  >
+                    <strong>{event.eventType} | {event.meterId}</strong>
+                    <p>Severity: {event.severity.toUpperCase()}</p>
+                    <small>{new Date(event.detectedAt).toLocaleString()}</small>
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="event-detail">
+              {!selectedFraudEventDetail ? (
+                <p className="empty-copy">Select an event to see meter, loss, voltage, current and kWh details.</p>
+              ) : (
+                <>
+                  <h3>{selectedFraudEventDetail.event.eventType}</h3>
+                  <p><strong>Meter:</strong> {selectedFraudEventDetail.meter.id} ({selectedFraudEventDetail.meter.serialNumber})</p>
+                  <p><strong>Location:</strong> {selectedFraudEventDetail.meter.location}</p>
+                  <p><strong>Status:</strong> {selectedFraudEventDetail.meter.status}</p>
+                  <p><strong>Detected At:</strong> {new Date(selectedFraudEventDetail.event.detectedAt).toLocaleString()}</p>
+                  <p><strong>Event Time:</strong> {new Date(selectedFraudEventDetail.incident.timestamp).toLocaleString()}</p>
+                  <p><strong>kWh:</strong> {selectedFraudEventDetail.incident.kwh ?? "N/A"}</p>
+                  <p><strong>Voltage:</strong> {selectedFraudEventDetail.incident.voltage ?? "N/A"} V</p>
+                  <p><strong>Current:</strong> {selectedFraudEventDetail.incident.current ?? "N/A"} A</p>
+                  <p><strong>Estimated Loss:</strong> {selectedFraudEventDetail.incident.estimatedLossKwh} kWh</p>
+                </>
+              )}
+            </div>
           </div>
         </article>
       </section>

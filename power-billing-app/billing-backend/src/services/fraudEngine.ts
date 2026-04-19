@@ -57,6 +57,23 @@ const isMeterTampering = (reading: Pick<Reading, "voltage" | "current">): boolea
 const isBypassConnection = (reading: Pick<Reading, "kwh" | "voltage" | "current">): boolean =>
   reading.kwh === 0 && reading.voltage > 200 && reading.current > 2;
 
+const buildSnapshot = (
+  reading: Reading,
+  extra?: Record<string, unknown>
+): Record<string, unknown> => {
+  const apparentPowerKw = Number(((reading.voltage * reading.current) / 1000).toFixed(3));
+  return {
+    readingId: reading.id,
+    timestamp: reading.timestamp,
+    kwh: reading.kwh,
+    voltage: reading.voltage,
+    current: reading.current,
+    apparentPowerKw,
+    estimatedLossKwh: apparentPowerKw,
+    ...extra
+  };
+};
+
 export const processFraudEngine = async (
   input: FraudEngineInput,
   meter: Meter,
@@ -74,7 +91,8 @@ export const processFraudEngine = async (
         const event = await createFraudEvent(meter.id, "DUPLICATE_SESSION_ID", "high", "session_rule", {
           sessionId: duplicate.sessionId,
           meterId: duplicate.meterId,
-          regionId: duplicate.regionId
+          regionId: duplicate.regionId,
+          estimatedLossKwh: 0
         });
         fraudEvents.push(event);
       }
@@ -105,7 +123,8 @@ export const processFraudEngine = async (
       const event = await createFraudEvent(meter.id, "REGIONAL_MISMATCH", "high", "region_rule", {
         incomingRegionId: regionResult.fraudRecord.incomingRegionId,
         registeredRegionId: regionResult.fraudRecord.registeredRegionId,
-        fraudRecordId: regionResult.fraudRecord.id
+        fraudRecordId: regionResult.fraudRecord.id,
+        estimatedLossKwh: 0
       });
       fraudEvents.push(event);
     }
@@ -136,8 +155,9 @@ export const processFraudEngine = async (
         eventBus.broadcast("fraud.alert", alert);
 
         const event = await createFraudEvent(meter.id, "SUDDEN_CONSUMPTION_SPIKE", "high", "consumption_rule", {
-          readingId: savedReading.id,
-          reason: alert.reason
+          ...buildSnapshot(savedReading, {
+            reason: alert.reason
+          })
         });
         fraudEvents.push(event);
       }
@@ -149,7 +169,9 @@ export const processFraudEngine = async (
           fraudLogId: saved.id,
           season: saved.season,
           expectedKwh: saved.expectedKwh,
-          observedKwh: saved.observedKwh
+          observedKwh: saved.observedKwh,
+          estimatedLossKwh: Number((Math.max(saved.expectedKwh - saved.observedKwh, 0)).toFixed(3)),
+          readingId: saved.readingId
         });
         fraudEvents.push(event);
       }
@@ -158,26 +180,22 @@ export const processFraudEngine = async (
       if (nonUsage) {
         const event = await createFraudEvent(meter.id, "NON_USAGE", nonUsage.severity, "non_usage_rule", {
           alertId: nonUsage.id,
-          reason: nonUsage.reason
+          reason: nonUsage.reason,
+          estimatedLossKwh: 0
         });
         fraudEvents.push(event);
       }
 
       if (isMeterTampering(savedReading)) {
         const event = await createFraudEvent(meter.id, "METER_TAMPERING", "high", "electrical_pattern_rule", {
-          readingId: savedReading.id,
-          voltage: savedReading.voltage,
-          current: savedReading.current
+          ...buildSnapshot(savedReading)
         });
         fraudEvents.push(event);
       }
 
       if (isBypassConnection(savedReading)) {
         const event = await createFraudEvent(meter.id, "BYPASS_CONNECTION", "high", "bypass_rule", {
-          readingId: savedReading.id,
-          kwh: savedReading.kwh,
-          voltage: savedReading.voltage,
-          current: savedReading.current
+          ...buildSnapshot(savedReading)
         });
         fraudEvents.push(event);
       }
@@ -197,7 +215,8 @@ export const processFraudEngine = async (
       const event = await createFraudEvent(meter.id, "SUDDEN_CONSUMPTION_SPIKE", "high", "power_sample_rule", {
         spikeId: spike.id,
         powerKw: spike.powerKw,
-        thresholdKw: spike.thresholdKw
+        thresholdKw: spike.thresholdKw,
+        estimatedLossKwh: Number((spike.excessKw).toFixed(3))
       });
       fraudEvents.push(event);
     }

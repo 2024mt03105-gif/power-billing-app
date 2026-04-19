@@ -228,6 +228,11 @@ export const repository = {
     return rows.map((row) => toReading(row));
   },
 
+  async getReadingById(readingId: string): Promise<Reading | null> {
+    const rows = await sql`select * from readings where id = ${readingId} limit 1`;
+    return rows[0] ? toReading(rows[0]) : null;
+  },
+
   async listBillingMonths(meterId: string, limit = 12): Promise<string[]> {
     const rows = await sql`
       select to_char(timestamp at time zone 'UTC', 'YYYY-MM') as month
@@ -325,15 +330,32 @@ export const repository = {
 
     const alertCount = customerId
       ? await sql`
-          select count(f.*)::int as total_alerts
-          from fraud_alerts f
-          join meters m on m.id = f.meter_id
-          where m.customer_id = ${customerId} and f.detected_at >= ${monthStart} and f.detected_at < ${monthEnd.toISOString()}
+          select count(*)::int as total_alerts
+          from (
+            select f.meter_id, f.detected_at
+            from fraud_alerts f
+            join meters m on m.id = f.meter_id
+            where m.customer_id = ${customerId}
+              and f.detected_at >= ${monthStart}
+              and f.detected_at < ${monthEnd.toISOString()}
+            union all
+            select e.meter_id, e.detected_at
+            from fraud_events e
+            join meters m on m.id = e.meter_id
+            where m.customer_id = ${customerId}
+              and e.detected_at >= ${monthStart}
+              and e.detected_at < ${monthEnd.toISOString()}
+          ) t
         `
       : await sql`
           select count(*)::int as total_alerts
-          from fraud_alerts
-          where detected_at >= ${monthStart} and detected_at < ${monthEnd.toISOString()}
+          from (
+            select meter_id, detected_at from fraud_alerts
+            where detected_at >= ${monthStart} and detected_at < ${monthEnd.toISOString()}
+            union all
+            select meter_id, detected_at from fraud_events
+            where detected_at >= ${monthStart} and detected_at < ${monthEnd.toISOString()}
+          ) t
         `;
 
     return {
@@ -353,36 +375,60 @@ export const repository = {
 
     const severityRows = customerId
       ? await sql`
-          select f.severity, count(*)::int as total
-          from fraud_alerts f
-          join meters m on m.id = f.meter_id
-          where m.customer_id = ${customerId} and f.detected_at >= ${monthStart} and f.detected_at < ${monthEnd.toISOString()}
-          group by f.severity
-          order by f.severity
+          select x.severity, count(*)::int as total
+          from (
+            select f.meter_id, f.severity, f.detected_at
+            from fraud_alerts f
+            union all
+            select e.meter_id, e.severity, e.detected_at
+            from fraud_events e
+          ) x
+          join meters m on m.id = x.meter_id
+          where m.customer_id = ${customerId}
+            and x.detected_at >= ${monthStart}
+            and x.detected_at < ${monthEnd.toISOString()}
+          group by x.severity
+          order by x.severity
         `
       : await sql`
-          select severity, count(*)::int as total
-          from fraud_alerts
-          where detected_at >= ${monthStart} and detected_at < ${monthEnd.toISOString()}
-          group by severity
-          order by severity
+          select x.severity, count(*)::int as total
+          from (
+            select severity, detected_at from fraud_alerts
+            union all
+            select severity, detected_at from fraud_events
+          ) x
+          where x.detected_at >= ${monthStart}
+            and x.detected_at < ${monthEnd.toISOString()}
+          group by x.severity
+          order by x.severity
         `;
 
     const riskyMeterRows = customerId
       ? await sql`
-          select m.id as meter_id, m.location, count(f.*)::int as alert_count
-          from meters m
-          join fraud_alerts f on f.meter_id = m.id
-          where m.customer_id = ${customerId} and f.detected_at >= ${monthStart} and f.detected_at < ${monthEnd.toISOString()}
+          select m.id as meter_id, m.location, count(*)::int as alert_count
+          from (
+            select meter_id, detected_at from fraud_alerts
+            union all
+            select meter_id, detected_at from fraud_events
+          ) x
+          join meters m on m.id = x.meter_id
+          where m.customer_id = ${customerId}
+            and x.detected_at >= ${monthStart}
+            and x.detected_at < ${monthEnd.toISOString()}
           group by m.id, m.location
           order by alert_count desc, m.id asc
           limit 5
         `
       : await sql`
-          select m.id as meter_id, m.location, count(f.*)::int as alert_count
-          from meters m
-          join fraud_alerts f on f.meter_id = m.id
-          where f.detected_at >= ${monthStart} and f.detected_at < ${monthEnd.toISOString()}
+          select m.id as meter_id, m.location, count(*)::int as alert_count
+          from (
+            select meter_id, detected_at from fraud_alerts
+            union all
+            select meter_id, detected_at from fraud_events
+          ) x
+          join meters m on m.id = x.meter_id
+          where x.detected_at >= ${monthStart}
+            and x.detected_at < ${monthEnd.toISOString()}
           group by m.id, m.location
           order by alert_count desc, m.id asc
           limit 5
@@ -633,6 +679,11 @@ export const repository = {
           limit ${limit}
         `;
     return rows.map((row) => toFraudEvent(row));
+  },
+
+  async getFraudEventById(eventId: string): Promise<FraudEvent | null> {
+    const rows = await sql`select * from fraud_events where id = ${eventId} limit 1`;
+    return rows[0] ? toFraudEvent(rows[0]) : null;
   },
 
   async createConsumptionSession(session: Omit<ConsumptionSession, "createdAt" | "updatedAt">): Promise<ConsumptionSession> {

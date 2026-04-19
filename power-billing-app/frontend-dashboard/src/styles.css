@@ -343,6 +343,10 @@ h1 {
   padding: 14px;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  width: 100%;
+  text-align: left;
+  color: #f5f4ef;
+  background-clip: padding-box;
 }
 
 .alert-row.medium {
@@ -351,6 +355,30 @@ h1 {
 
 .alert-row.high {
   background: rgba(255, 98, 98, 0.14);
+}
+
+.alert-row.selected {
+  border-color: rgba(255, 194, 107, 0.75);
+}
+
+.event-layout {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 14px;
+}
+
+.event-detail {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.event-detail h3 {
+  margin: 0 0 4px;
 }
 
 .tariff-grid {
@@ -388,6 +416,7 @@ h1 {
   .content-grid,
   .credential-grid,
   .reading-row,
+  .event-layout,
   .tariff-grid,
   .slab-row,
   .tariff-actions,

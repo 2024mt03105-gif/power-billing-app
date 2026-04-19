@@ -132,6 +132,10 @@ const sessionStopSchema = z.object({
   endTime: z.string().datetime()
 });
 
+const initiateFraudCasesSchema = z.object({
+  customerId: z.string().min(1).default("cust-1001")
+});
+
 const ensureMeterAccess = (user: AuthUser, meter: Meter | null): Meter | null => {
   if (!meter) return null;
   if (user.role === "customer" && user.customerId !== meter.customerId) return null;
@@ -428,6 +432,214 @@ export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
       return { items: itemsPerMeter.flat().sort((a, b) => b.detectedAt.localeCompare(a.detectedAt)).slice(0, query.limit) };
     }
     return { items: await repository.listFraudEvents(query.meterId, query.limit) };
+  });
+
+  app.get("/api/fraud-engine/events/:eventId", { preHandler: [authenticate] }, async (request, reply) => {
+    const params = z.object({ eventId: z.string().min(1) }).parse(request.params);
+    const user = getAuthUser(request);
+    const event = await repository.getFraudEventById(params.eventId);
+    if (!event) return reply.code(404).send({ message: "Fraud event not found" });
+
+    const meter = await repository.getMeter(event.meterId);
+    if (!meter) return reply.code(404).send({ message: "Meter not found for event" });
+    if (user.role === "customer" && meter.customerId !== user.customerId) return reply.code(404).send({ message: "Fraud event not found" });
+
+    const payloadReadingId = event.payload.readingId;
+    const readingId = typeof payloadReadingId === "string" ? payloadReadingId : null;
+    const reading = readingId ? await repository.getReadingById(readingId) : null;
+    const estimatedLossKwh =
+      typeof event.payload.estimatedLossKwh === "number"
+        ? event.payload.estimatedLossKwh
+        : typeof event.payload.powerKw === "number" && typeof event.payload.thresholdKw === "number"
+          ? Number((Math.max(event.payload.powerKw - event.payload.thresholdKw, 0)).toFixed(3))
+          : 0;
+
+    return {
+      event,
+      meter: {
+        id: meter.id,
+        serialNumber: meter.serialNumber,
+        location: meter.location,
+        status: meter.status
+      },
+      incident: {
+        timestamp: reading?.timestamp ?? event.detectedAt,
+        kwh: reading?.kwh ?? (typeof event.payload.kwh === "number" ? event.payload.kwh : null),
+        voltage: reading?.voltage ?? (typeof event.payload.voltage === "number" ? event.payload.voltage : null),
+        current: reading?.current ?? (typeof event.payload.current === "number" ? event.payload.current : null),
+        estimatedLossKwh
+      }
+    };
+  });
+
+  app.post("/admin/fraud-engine/initiate-cases", { preHandler: [authenticate, requireRoles("admin")] }, async (request) => {
+    const body = initiateFraudCasesSchema.parse(request.body ?? {});
+    const nonce = Date.now();
+    const createdAt = new Date().toISOString();
+
+    const createMeterForCase = async (caseName: string, regionId = "Cluster-A"): Promise<Meter> => {
+      const meter: Meter = {
+        id: `meter-fraud-${caseName}-${nonce}-${Math.floor(Math.random() * 1000)}`,
+        customerId: body.customerId,
+        serialNumber: `FRAUD-${caseName}-${nonce}-${Math.floor(Math.random() * 1000)}`,
+        location: `${regionId} / Fraud-Lab-${caseName}`,
+        status: "active",
+        installedAt: createdAt
+      };
+      const saved = await repository.saveMeter(meter);
+      await repository.upsertMeterRegionRegistration({
+        meterId: saved.id,
+        regionId,
+        latitude: 17.48,
+        longitude: 78.44,
+        updatedAt: createdAt
+      });
+      return saved;
+    };
+
+    const triggered: Array<{ case: string; expectedEvent: string; detected: boolean; meterId: string; eventIds: string[] }> = [];
+
+    {
+      const meter = await createMeterForCase("tampering");
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:00:00.000Z",
+          reading: { kwh: 10, voltage: 205, current: 9.2, source: "iot" }
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "METER_TAMPERING");
+      triggered.push({ case: "meter tampering", expectedEvent: "METER_TAMPERING", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    {
+      const meter = await createMeterForCase("bypass");
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:01:00.000Z",
+          reading: { kwh: 0, voltage: 228, current: 3.1, source: "iot" }
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "BYPASS_CONNECTION");
+      triggered.push({ case: "bypass connection", expectedEvent: "BYPASS_CONNECTION", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    {
+      const meter = await createMeterForCase("duplicate-session");
+      const sessionId = `sess-fraud-${nonce}`;
+      await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:02:00.000Z",
+          session: {
+            sessionId,
+            startTime: "2026-04-19T10:01:00.000Z",
+            endTime: "2026-04-19T10:02:00.000Z",
+            regionId: "Cluster-A"
+          }
+        },
+        meter,
+        request.log
+      );
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:03:00.000Z",
+          session: {
+            sessionId,
+            startTime: "2026-04-19T10:02:00.000Z",
+            endTime: "2026-04-19T10:03:00.000Z",
+            regionId: "Cluster-A"
+          }
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "DUPLICATE_SESSION_ID");
+      triggered.push({ case: "duplicate session ID", expectedEvent: "DUPLICATE_SESSION_ID", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    {
+      const meter = await createMeterForCase("seasonal");
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:04:00.000Z",
+          reading: { kwh: 5, voltage: 228, current: 1.5, source: "iot" }
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "SEASONAL_REPLAY");
+      triggered.push({ case: "seasonal replay", expectedEvent: "SEASONAL_REPLAY", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    {
+      const meter = await createMeterForCase("region");
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:05:00.000Z",
+          regionCheck: { regionId: "Cluster-B", latitude: 17.52, longitude: 78.45 }
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "REGIONAL_MISMATCH");
+      triggered.push({ case: "regional mismatch", expectedEvent: "REGIONAL_MISMATCH", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    {
+      const meter = await createMeterForCase("non-usage");
+      await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T00:00:00.000Z",
+          reading: { kwh: 0, voltage: 228, current: 1.2, source: "iot" }
+        },
+        meter,
+        request.log
+      );
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-20T01:10:00.000Z",
+          reading: { kwh: 0, voltage: 227, current: 1.1, source: "iot" }
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "NON_USAGE");
+      triggered.push({ case: "non-usage", expectedEvent: "NON_USAGE", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    {
+      const meter = await createMeterForCase("spike");
+      await repository.upsertSpikeThreshold({ meterId: meter.id, thresholdKw: 6.5, updatedAt: createdAt });
+      const result = await processFraudEngine(
+        {
+          meterId: meter.id,
+          timestamp: "2026-04-19T10:06:00.000Z",
+          powerSampleKw: 11.8
+        },
+        meter,
+        request.log
+      );
+      const events = result.fraudEvents.filter((e) => e.eventType === "SUDDEN_CONSUMPTION_SPIKE");
+      triggered.push({ case: "sudden consumption spike", expectedEvent: "SUDDEN_CONSUMPTION_SPIKE", detected: events.length > 0, meterId: meter.id, eventIds: events.map((e) => e.id) });
+    }
+
+    return {
+      initiatedAt: new Date().toISOString(),
+      totalCases: triggered.length,
+      successCount: triggered.filter((item) => item.detected).length,
+      items: triggered
+    };
   });
 
   app.post("/api/meters/:meterId/power-samples", { preHandler: [authenticate, requireRoles("admin")] }, async (request, reply) => {
